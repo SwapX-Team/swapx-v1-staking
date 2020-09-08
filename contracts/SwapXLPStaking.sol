@@ -101,7 +101,7 @@ contract SwapXLPStaking is Ownable {
     }
 
     // Set the migrator contract. Can only be called by the owner.
-    function setMigrator(IMigratorChef _migrator) public onlyOwner {
+    function setMigrator(IMigrator _migrator) public onlyOwner {
         migrator = _migrator;
     }
 
