@@ -194,7 +194,7 @@ contract SwapXLPStaking is Ownable {
         updatePool(_pid);
         if (user.amount > 0) {
             uint256 pending = user.amount.mul(pool.accSwpPerShare).div(1e12).sub(user.rewardDebt);
-            require(safeSwpTransfer(msg.sender, pending),"SwapX Staking: distribute rewards err");
+            safeSwpTransfer(msg.sender, pending);
         }
         if(_amount>0){
             pool.lpToken.safeTransferFrom(msg.sender, address(this), _amount);
@@ -212,7 +212,7 @@ contract SwapXLPStaking is Ownable {
         require(user.amount >= _amount, "withdraw: not good");
         updatePool(_pid);
         uint256 pending = user.amount.mul(pool.accSwpPerShare).div(1e12).sub(user.rewardDebt);
-        require(safeSwpTransfer(msg.sender, pending),"SwapX Staking: distribute rewards err");
+        safeSwpTransfer(msg.sender, pending);
         user.amount = user.amount.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accSwpPerShare).div(1e12);
         if(_amount>0){
@@ -234,15 +234,15 @@ contract SwapXLPStaking is Ownable {
     }
 
     // Safe SWP transfer function, just in case if rounding error causes pool to not have enough SWP.
-    function safeSwpTransfer(address _to, uint256 _amount) internal returns (bool){
+    function safeSwpTransfer(address _to, uint256 _amount) internal{
         uint256 swpBal = swp.balanceOf(address(this));
-        bool result;
+        uint256 amount
         if (_amount > swpBal) {
-            result = swp.transfer(_to, swpBal);
+            amount = swpBal;
         } else {
-            result = swp.transfer(_to, _amount);
+            amount = _amount;
         }
-        emit SafeSwpTransfer(_to, _amount);
-        return result;
+        require(swp.transfer(_to, amount), "SwapX Staking: swp transfer failed");
+        emit SafeSwpTransfer(_to, amount);
     }
 }
