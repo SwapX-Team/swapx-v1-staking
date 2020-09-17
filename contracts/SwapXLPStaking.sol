@@ -42,14 +42,15 @@ contract SwapXLPStaking is Ownable {
     // The migrator contract. It has a lot of power. Can only be set through governance (owner).
     IMigrator public migrator;
     // The block number when SWP mining starts.
-    uint256 public startBlock;
+    uint256 immutable public startBlock;
     // The block number when SWP mining ends.
-    uint256 public endBlock;
+    uint256 immutable public endBlock;
     // SWP tokens created per block.
-    uint256 public swpPerBlock;
+    uint256 immutable public swpPerBlock;
 
     // Info of each pool.
     PoolInfo[] public poolInfo;
+    mapping (address => bool) public  addedPool;
     // Info of each user that stakes LP tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
     // Total allocation poitns. Must be the sum of all allocation points in all pools.
@@ -58,6 +59,12 @@ contract SwapXLPStaking is Ownable {
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event SafeSwpTransfer(address to, uint256 amount);
+    event SetMigrator(address indexed newMigrator);
+    event Initialization(address swp, uint256 swpPerBlock, uint256 startBlock, uint256 endBlock);
+    event Add(uint256 allocPoint, IERC20 lpToken, bool withUpdate);
+    event Set(uint256 pid, uint256 allocPoint, bool withUpdate);
+    event BatchUpdatePools();
 
     constructor(
         ISwapXToken _swp,
@@ -69,6 +76,7 @@ contract SwapXLPStaking is Ownable {
         swpPerBlock = _swpPerBlock;
         startBlock = _startBlock;
         endBlock = _endBlock;
+        emit Initialization(address(_swp), _swpPerBlock, _startBlock, _endBlock);
     }
 
     function poolLength() external view returns (uint256) {
@@ -78,8 +86,9 @@ contract SwapXLPStaking is Ownable {
     // Add a new lp to the pool. Can only be called by the owner.
     // DO NOT add the same LP token more than once. Rewards will be messed up if you do.
     function add(uint256 _allocPoint, IERC20 _lpToken, bool _withUpdate) public onlyOwner {
+        require(!addedPool[address(_lpToken)], "SwapX Staking: duplicate lpToken");
         if (_withUpdate) {
-            massUpdatePools();
+            batchUpdatePools();
         }
         uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
         totalAllocPoint = totalAllocPoint.add(_allocPoint);
@@ -89,36 +98,42 @@ contract SwapXLPStaking is Ownable {
             lastRewardBlock: lastRewardBlock,
             accSwpPerShare: 0
         }));
+        addedPool[address(_lpToken)] = true;
+        emit Add(_allocPoint, _lpToken, _withUpdate);
     }
 
     // Update the given pool's SWP allocation point. Can only be called by the owner.
     function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public onlyOwner {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         if (_withUpdate) {
-            massUpdatePools();
+            batchUpdatePools();
         }
         totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
         poolInfo[_pid].allocPoint = _allocPoint;
+        emit Set(_pid, _allocPoint, _withUpdate);
     }
 
     // Set the migrator contract. Can only be called by the owner.
     function setMigrator(IMigrator _migrator) public onlyOwner {
         migrator = _migrator;
+        emit SetMigrator(address(_migrator));
     }
 
     // Migrate lp token to another lp contract. Can be called by anyone. We trust that migrator contract is good.
     function migrate(uint256 _pid) public {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         require(address(migrator) != address(0), "migrate: no migrator");
         PoolInfo storage pool = poolInfo[_pid];
         IERC20 lpToken = pool.lpToken;
         uint256 bal = lpToken.balanceOf(address(this));
         lpToken.safeApprove(address(migrator), bal);
         IERC20 newLpToken = migrator.migrate(lpToken);
-        require(bal == newLpToken.balanceOf(address(this)), "migrate: bad");
+        require(address(newLpToken) != address(0) && (bal == newLpToken.balanceOf(address(this))), "migrate: bad");
         pool.lpToken = newLpToken;
     }
 
     // Return reward multiplier over the given _from to _to block.
-    function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
+    function getMultiplier(uint256 _from, uint256 _to) internal view returns (uint256) {
         if (_to <= endBlock) {
             return _to.sub(_from);
         } else if (_from >= endBlock) {
@@ -130,6 +145,7 @@ contract SwapXLPStaking is Ownable {
 
     // View function to see pending SWP on frontend.
     function pendingSWP(uint256 _pid, address _user) external view returns (uint256) {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accSwpPerShare = pool.accSwpPerShare;
@@ -143,15 +159,17 @@ contract SwapXLPStaking is Ownable {
     }
 
     // Update reward vairables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
+    function batchUpdatePools() public {
         uint256 length = poolInfo.length;
         for (uint256 pid = 0; pid < length; ++pid) {
             updatePool(pid);
         }
+        emit BatchUpdatePools();
     }
 
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
+    function updatePool(uint256 _pid) internal {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
@@ -163,21 +181,24 @@ contract SwapXLPStaking is Ownable {
         }
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 swpReward = multiplier.mul(swpPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-        swp.issue(address(this), swpReward);
+        require(swp.issue(address(this), swpReward), "SwapX Staking: distribute rewards err");
         pool.accSwpPerShare = pool.accSwpPerShare.add(swpReward.mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
     }
 
     // Deposit LP tokens to Staking for SWP allocation.
     function deposit(uint256 _pid, uint256 _amount) public {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         updatePool(_pid);
         if (user.amount > 0) {
             uint256 pending = user.amount.mul(pool.accSwpPerShare).div(1e12).sub(user.rewardDebt);
-            safeSwpTransfer(msg.sender, pending);
+            require(safeSwpTransfer(msg.sender, pending),"SwapX Staking: distribute rewards err");
         }
-        pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
+        if(_amount>0){
+            pool.lpToken.safeTransferFrom(msg.sender, address(this), _amount);
+        }
         user.amount = user.amount.add(_amount);
         user.rewardDebt = user.amount.mul(pool.accSwpPerShare).div(1e12);
         emit Deposit(msg.sender, _pid, _amount);
@@ -185,35 +206,43 @@ contract SwapXLPStaking is Ownable {
 
     // Withdraw LP tokens from SwapXLPStaking.
     function withdraw(uint256 _pid, uint256 _amount) public {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
         updatePool(_pid);
         uint256 pending = user.amount.mul(pool.accSwpPerShare).div(1e12).sub(user.rewardDebt);
-        safeSwpTransfer(msg.sender, pending);
+        require(safeSwpTransfer(msg.sender, pending),"SwapX Staking: distribute rewards err");
         user.amount = user.amount.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accSwpPerShare).div(1e12);
-        pool.lpToken.safeTransfer(address(msg.sender), _amount);
+        if(_amount>0){
+            pool.lpToken.safeTransfer(msg.sender, _amount);
+        }
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
     function emergencyWithdraw(uint256 _pid) public {
+        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.lpToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        uint256 amount = user.amount;
         user.amount = 0;
+        pool.lpToken.safeTransfer(msg.sender, amount);
+        emit EmergencyWithdraw(msg.sender, _pid, amount);
         user.rewardDebt = 0;
     }
 
     // Safe SWP transfer function, just in case if rounding error causes pool to not have enough SWP.
-    function safeSwpTransfer(address _to, uint256 _amount) internal {
+    function safeSwpTransfer(address _to, uint256 _amount) internal returns (bool){
         uint256 swpBal = swp.balanceOf(address(this));
+        bool result;
         if (_amount > swpBal) {
-            swp.transfer(_to, swpBal);
+            result = swp.transfer(_to, swpBal);
         } else {
-            swp.transfer(_to, _amount);
+            result = swp.transfer(_to, _amount);
         }
+        emit SafeSwpTransfer(_to, _amount);
+        return result;
     }
 }
