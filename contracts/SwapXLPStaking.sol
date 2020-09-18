@@ -148,7 +148,6 @@ contract SwapXLPStaking is Ownable {
 
     // View function to see pending SWP on frontend.
     function pendingSWP(uint256 _pid, address _user) external view returns (uint256) {
-        require(_pid<poolInfo.length, "SwapX Staking: bad pid");
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accSwpPerShare = pool.accSwpPerShare;
