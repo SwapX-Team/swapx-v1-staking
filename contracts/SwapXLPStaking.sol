@@ -12,7 +12,7 @@ import "./interfaces/ISwapXToken.sol";
 contract SwapXLPStaking is Ownable {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
-
+    using SafeERC20 for ISwapXToken;
     // Info of each user.
     struct UserInfo {
         uint256 amount;     // How many LP tokens the user has provided.
@@ -61,10 +61,12 @@ contract SwapXLPStaking is Ownable {
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event SafeSwpTransfer(address to, uint256 amount);
     event SetMigrator(address indexed newMigrator);
+    event Migrate(uint256 pid, address indexed lpToken, address indexed newToken);
     event Initialization(address swp, uint256 swpPerBlock, uint256 startBlock, uint256 endBlock);
     event Add(uint256 allocPoint, IERC20 lpToken, bool withUpdate);
     event Set(uint256 pid, uint256 allocPoint, bool withUpdate);
     event BatchUpdatePools();
+    event UpdatePool(uint256 pid);
 
     constructor(
         ISwapXToken _swp,
@@ -130,6 +132,7 @@ contract SwapXLPStaking is Ownable {
         IERC20 newLpToken = migrator.migrate(lpToken);
         require(address(newLpToken) != address(0) && (bal == newLpToken.balanceOf(address(this))), "migrate: bad");
         pool.lpToken = newLpToken;
+        emit Migrate(_pid, address(lpToken), address(newLpToken));
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -184,6 +187,7 @@ contract SwapXLPStaking is Ownable {
         require(swp.issue(address(this), swpReward), "SwapX Staking: distribute rewards err");
         pool.accSwpPerShare = pool.accSwpPerShare.add(swpReward.mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
+        emit UpdatePool(_pid);
     }
 
     // Deposit LP tokens to Staking for SWP allocation.
@@ -236,13 +240,13 @@ contract SwapXLPStaking is Ownable {
     // Safe SWP transfer function, just in case if rounding error causes pool to not have enough SWP.
     function safeSwpTransfer(address _to, uint256 _amount) internal{
         uint256 swpBal = swp.balanceOf(address(this));
-        uint256 amount
+        uint256 amount;
         if (_amount > swpBal) {
             amount = swpBal;
         } else {
             amount = _amount;
         }
-        require(swp.transfer(_to, amount), "SwapX Staking: swp transfer failed");
+        swp.safeTransfer(_to, amount);
         emit SafeSwpTransfer(_to, amount);
     }
 }
